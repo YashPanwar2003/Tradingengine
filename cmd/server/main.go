@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	//defined modules
 	"tradingengine/internal/gateway"
 	"tradingengine/internal/matching"
 	"tradingengine/internal/order"
@@ -27,7 +26,7 @@ func main(){
 	orderQueue:=queue.NewOrderQueue(100)
 
 	engine:=matching.NewEngine(orderQueue,orderService,100)
-
+    go engine.Run(ctx)
 	gw:=gateway.NewGateway(orderService,orderQueue)
 
 	go consumeTrades(ctx,engine)
