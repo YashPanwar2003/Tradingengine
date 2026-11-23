@@ -45,29 +45,29 @@ func (q *OrderQueue) Enqueue(order *types.Order) error {
 	}
 }
 
-func (q *OrderQueue) EnqueueCancel(orderId string,order *types.Order)error{
+func (q *OrderQueue) EnqueueCancel(orderId string, order *types.Order) error {
 	req := OrderRequest{
-        Type:    RequestTypeCancel,
-        OrderId: orderId,
-		Order: order,
-    }
+		Type:    RequestTypeCancel,
+		OrderId: orderId,
+		Order:   order,
+	}
 
-    select {
-    case q.ch <- req:
-        return nil
-    default:
-        return fmt.Errorf("order queue full, cancel for %s rejected", orderId)
-    }
+	select {
+	case q.ch <- req:
+		return nil
+	default:
+		return fmt.Errorf("order queue full, cancel for %s rejected", orderId)
+	}
 }
 
-func (q *OrderQueue) Consume() <-chan OrderRequest{
+func (q *OrderQueue) Consume() <-chan OrderRequest {
 	return q.ch
 }
 
 func (q *OrderQueue) Len() int {
-    return len(q.ch)
+	return len(q.ch)
 }
 
 func (q *OrderQueue) Close() {
-    close(q.ch)
+	close(q.ch)
 }

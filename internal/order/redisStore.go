@@ -21,8 +21,8 @@ func (r *RedisStore) Save(order *types.Order) error {
 		return fmt.Errorf("Serializing object:%w", err)
 	}
 	err1 := r.orders.Set(ctx, order.Id, data, time.Hour).Err()
-	if err1 !=nil{
-		return fmt.Errorf("Error while storing: %w",err)
+	if err1 != nil {
+		return fmt.Errorf("Error while storing: %w", err)
 	}
-    return nil
+	return nil
 }

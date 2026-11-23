@@ -2,28 +2,27 @@ package gateway
 
 import "tradingengine/pkg/types"
 
+type PlaceOrderRequest struct {
+	ClientId    string            `json:"clientId"`
+	Symbol      string            `json:"symbol"`
+	Side        types.Side        `json:"side"`
+	Type        types.OrderType   `json:"type"`
+	Price       string            `json:"price"`
+	Quantity    string            `json:"quantity"`
+	TimeInForce types.TimeInForce `json:"timeInForce"`
+}
 
-type PlaceOrderRequest struct{
+type PlaceOrderResponse struct {
+	Order   *types.Order `json:"order"`
+	Message string       `json:"message"`
+}
+
+type CancelOrderRequest struct {
 	ClientId string
-	Symbol string
-	Side   types.Side
-	Type types.OrderType
-	Price string
-	Quantity string
-	TimeInForce types.TimeInForce
+	OrderId  string
 }
 
-type PlaceOrderResponse struct{
-	Order *types.Order
-	Message string
-}
-
-type CacelOrderRequest struct{
-	ClientId string
-	OrderId string
-}
-
-type  CancelOrderReponse struct{
-	OrderId string
-	Message string
+type CancelOrderResponse struct {
+	OrderId string `json:"orderId"`
+	Message string `json:"message"`
 }

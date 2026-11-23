@@ -2,6 +2,7 @@ package orderbook
 
 import (
 	"container/heap"
+	"sort"
 
 	"tradingengine/pkg/types"
 
@@ -18,7 +19,7 @@ func (h *LevelHeap) Less(i, j int) bool {
 	if h.isMaxHeap {
 		return h.levels[i].Price.GreaterThan(h.levels[j].Price)
 	}
-	return h.levels[i].Price.LessThan(h.levels[i].Price)
+	return h.levels[i].Price.LessThan(h.levels[j].Price)
 }
 
 func (h *LevelHeap) Swap(i, j int) {
@@ -30,8 +31,8 @@ func (h *LevelHeap) Push(x any) {
 
 }
 
-func (h *LevelHeap) Top()  *Level{
-	if h.Len()==0 {
+func (h *LevelHeap) Top() *Level {
+	if h.Len() == 0 {
 		return nil
 	}
 	return h.levels[0]
@@ -103,4 +104,19 @@ func (s *Side) CancelOrder(orderId string, price decimal.Decimal) bool {
 }
 func (s *Side) IsEmpty() bool {
 	return s.heap.Len() == 0
+}
+
+// Levels returns a copy of the price levels ordered best-first (highest bid or
+// lowest ask first). It does not change the side, so it is safe for read-only
+// checks such as fill-or-kill.
+func (s *Side) Levels() []*Level {
+	out := make([]*Level, len(s.heap.levels))
+	copy(out, s.heap.levels)
+	sort.Slice(out, func(i, j int) bool {
+		if s.heap.isMaxHeap {
+			return out[i].Price.GreaterThan(out[j].Price)
+		}
+		return out[i].Price.LessThan(out[j].Price)
+	})
+	return out
 }
