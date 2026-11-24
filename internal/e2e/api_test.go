@@ -511,3 +511,168 @@ func TestAPI_OrderJSONContract(t *testing.T) {
 		}
 	}
 }
+
+type placeResp struct {
+	Order    types.Order `json:"order"`
+	Message  string      `json:"message"`
+	Replayed bool        `json:"replayed"`
+}
+
+// postOrder is safe to call from goroutines (it never calls t.Fatal).
+func (s *stack) postOrder(body string) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodPost, s.URL+"/orders", strings.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Engine-Key", apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, raw, err
+}
+
+func keyedBody(key, clientID, side string, price, qty int64) string {
+	return fmt.Sprintf(
+		`{"clientId":%q,"clientOrderId":%q,"symbol":"BTC-USD","side":%q,"type":"LIMIT","price":"%d","quantity":"%d","timeInForce":"GTC"}`,
+		clientID, key, side, price, qty)
+}
+
+func (s *stack) placeKeyed(t *testing.T, key, clientID, side string, price, qty int64) (int, placeResp) {
+	t.Helper()
+	code, raw, err := s.postOrder(keyedBody(key, clientID, side, price, qty))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out placeResp
+	_ = json.Unmarshal(raw, &out) // error responses simply decode to the zero value
+	return code, out
+}
+
+func TestAPI_RetryWithTheSameKeyReturnsTheSameOrder(t *testing.T) {
+	client := testutil.NewDB(t)
+	s := startStack(t, client)
+
+	code1, first := s.placeKeyed(t, "k1", "c1", "SELL", 100, 5)
+	code2, second := s.placeKeyed(t, "k1", "c1", "SELL", 100, 5)
+
+	if code1 != http.StatusCreated || first.Replayed {
+		t.Fatalf("first call: %d replayed=%v", code1, first.Replayed)
+	}
+	if code2 != http.StatusOK || !second.Replayed || second.Order.Id != first.Order.Id {
+		t.Fatalf("retry: %d replayed=%v id=%s (want %s)", code2, second.Replayed, second.Order.Id, first.Order.Id)
+	}
+	if n := countRows(t, client, "SELECT count(*) FROM orders"); n != 1 {
+		t.Fatalf("expected 1 order in the database, got %d", n)
+	}
+	waitUntil(t, "one order on the book", func() bool {
+		_, book := s.getBook(t, "/books/BTC-USD")
+		return len(book.Asks) == 1 && book.Asks[0].Orders == 1 &&
+			book.Asks[0].Quantity.Equal(decimal.NewFromInt(5))
+	})
+}
+
+func TestAPI_SameKeyWithDifferentDetailsIsAConflict(t *testing.T) {
+	client := testutil.NewDB(t)
+	s := startStack(t, client)
+
+	s.placeKeyed(t, "k1", "c1", "SELL", 100, 5)
+	if code, _ := s.placeKeyed(t, "k1", "c1", "SELL", 100, 6); code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", code)
+	}
+	if n := countRows(t, client, "SELECT count(*) FROM orders"); n != 1 {
+		t.Fatalf("expected 1 order, got %d", n)
+	}
+}
+
+// The case you asked about: identical details are NOT a duplicate by themselves.
+func TestAPI_IdenticalOrdersWithoutAKeyAreTwoOrders(t *testing.T) {
+	s := startStack(t, testutil.NewDB(t))
+
+	_, a := s.placeKeyed(t, "", "c1", "SELL", 100, 5)
+	_, b := s.placeKeyed(t, "", "c1", "SELL", 100, 5)
+	if a.Order.Id == b.Order.Id {
+		t.Fatal("two keyless requests must create two orders")
+	}
+	waitUntil(t, "both on the book", func() bool {
+		_, book := s.getBook(t, "/books/BTC-USD")
+		return len(book.Asks) == 1 && book.Asks[0].Orders == 2 &&
+			book.Asks[0].Quantity.Equal(decimal.NewFromInt(10))
+	})
+}
+
+func TestAPI_DifferentKeysAndDifferentClientsAreIndependent(t *testing.T) {
+	s := startStack(t, testutil.NewDB(t))
+
+	_, a := s.placeKeyed(t, "ka", "c1", "SELL", 100, 5)
+	_, b := s.placeKeyed(t, "kb", "c1", "SELL", 100, 5) // same details, other key
+	_, c := s.placeKeyed(t, "ka", "c2", "SELL", 100, 5) // same key, other client
+	if a.Order.Id == b.Order.Id || a.Order.Id == c.Order.Id || b.Order.Id == c.Order.Id {
+		t.Fatal("each of these must be its own order")
+	}
+}
+
+func TestAPI_InvalidClientOrderIdIs400(t *testing.T) {
+	s := startStack(t, testutil.NewDB(t))
+
+	for _, key := range []string{"has space", "emoji-😀", strings.Repeat("x", 65)} {
+		if code, _ := s.placeKeyed(t, key, "c1", "SELL", 100, 5); code != http.StatusBadRequest {
+			t.Errorf("key %q: expected 400, got %d", key, code)
+		}
+	}
+}
+
+// Parallel retries race on the unique index: exactly one may create the order.
+func TestAPI_ConcurrentRetriesCreateExactlyOneOrder(t *testing.T) {
+	client := testutil.NewDB(t)
+	s := startStack(t, client)
+
+	const n = 20
+	type result struct {
+		code int
+		id   string
+		err  error
+	}
+	results := make(chan result, n)
+	body := keyedBody("race-1", "c1", "SELL", 100, 5)
+	for i := 0; i < n; i++ {
+		go func() {
+			code, raw, err := s.postOrder(body)
+			var out placeResp
+			if err == nil {
+				_ = json.Unmarshal(raw, &out)
+			}
+			results <- result{code: code, id: out.Order.Id, err: err}
+		}()
+	}
+
+	created, replayed, ids := 0, 0, map[string]bool{}
+	for i := 0; i < n; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		switch r.code {
+		case http.StatusCreated:
+			created++
+		case http.StatusOK:
+			replayed++
+		default:
+			t.Fatalf("unexpected status %d", r.code)
+		}
+		ids[r.id] = true
+	}
+	if created != 1 || replayed != n-1 || len(ids) != 1 {
+		t.Fatalf("created=%d replayed=%d distinct ids=%d (want 1, %d, 1)", created, replayed, len(ids), n-1)
+	}
+	if rows := countRows(t, client, "SELECT count(*) FROM orders"); rows != 1 {
+		t.Fatalf("expected 1 order row, got %d", rows)
+	}
+	waitUntil(t, "a single order on the book", func() bool {
+		_, book := s.getBook(t, "/books/BTC-USD")
+		return len(book.Asks) == 1 && book.Asks[0].Orders == 1
+	})
+}

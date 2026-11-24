@@ -471,3 +471,66 @@ func TestListTradesByOrder_BothSidesOldestFirst(t *testing.T) {
 		}
 	}
 }
+func TestClientOrderId_UniquePerClient(t *testing.T) {
+	c := testutil.NewDB(t)
+	s := db.NewDBStorage(c)
+	ctx := context.Background()
+
+	mk := func(client, key string) *types.Order {
+		o := limit(types.SideBuy, 100, 1)
+		o.ClientId, o.ClientOrderId = client, key
+		return o
+	}
+
+	if err := s.InsertOrder(ctx, mk("c1", "k1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertOrder(ctx, mk("c1", "k1")); !errors.Is(err, types.ErrDuplicateClientOrderId) {
+		t.Fatalf("same client and key must be a duplicate, got %v", err)
+	}
+	if err := s.InsertOrder(ctx, mk("c2", "k1")); err != nil {
+		t.Fatalf("another client may reuse the key: %v", err)
+	}
+	if err := s.InsertOrder(ctx, mk("c1", "k2")); err != nil {
+		t.Fatalf("another key is fine: %v", err)
+	}
+	for i := 0; i < 3; i++ { // identical orders WITHOUT a key are all accepted
+		if err := s.InsertOrder(ctx, mk("c1", "")); err != nil {
+			t.Fatalf("keyless order %d: %v", i, err)
+		}
+	}
+	if n := count(t, c, "orders"); n != 6 {
+		t.Fatalf("expected 6 orders, got %d", n)
+	}
+}
+
+func TestInsertOrder_SameIdIsNotReportedAsADuplicateKey(t *testing.T) {
+	c := testutil.NewDB(t)
+	s := db.NewDBStorage(c)
+	ctx := context.Background()
+
+	o := limit(types.SideBuy, 100, 1) // no key
+	_ = s.InsertOrder(ctx, o)
+	err := s.InsertOrder(ctx, o) // primary key clash
+	if err == nil || errors.Is(err, types.ErrDuplicateClientOrderId) {
+		t.Fatalf("expected a plain insert error, got %v", err)
+	}
+}
+
+func TestFindByClientOrderID(t *testing.T) {
+	c := testutil.NewDB(t)
+	s := db.NewDBStorage(c)
+	ctx := context.Background()
+
+	o := limit(types.SideBuy, 100, 1)
+	o.ClientOrderId = "k1"
+	_ = s.InsertOrder(ctx, o)
+
+	got, err := s.FindByClientOrderID(ctx, "c1", "k1")
+	if err != nil || got.Id != o.Id || got.ClientOrderId != "k1" {
+		t.Fatalf("expected the original order, got %+v / %v", got, err)
+	}
+	if _, err := s.FindByClientOrderID(ctx, "c1", "missing"); !errors.Is(err, types.ErrOrderNotFound) {
+		t.Fatalf("expected ErrOrderNotFound, got %v", err)
+	}
+}

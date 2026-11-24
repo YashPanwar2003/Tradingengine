@@ -40,18 +40,19 @@ const (
 )
 
 type Order struct {
-	Id          string          `json:"id"`
-	ClientId    string          `json:"clientId"`
-	Symbol      string          `json:"symbol"`
-	Side        Side            `json:"side"`
-	Type        OrderType       `json:"type"`
-	Status      OrderStatus     `json:"status"`
-	TimeInForce TimeInForce     `json:"timeInForce"`
-	Price       decimal.Decimal `json:"price"`
-	Quantity    decimal.Decimal `json:"quantity"`
-	Filled      decimal.Decimal `json:"filled"`
-	CreatedAt   time.Time       `json:"createdAt"`
-	UpdatedAt   time.Time       `json:"updatedAt"`
+	Id            string          `json:"id"`
+	ClientId      string          `json:"clientId"`
+	ClientOrderId string          `json:"clientOrderId,omitempty"`
+	Symbol        string          `json:"symbol"`
+	Side          Side            `json:"side"`
+	Type          OrderType       `json:"type"`
+	Status        OrderStatus     `json:"status"`
+	TimeInForce   TimeInForce     `json:"timeInForce"`
+	Price         decimal.Decimal `json:"price"`
+	Quantity      decimal.Decimal `json:"quantity"`
+	Filled        decimal.Decimal `json:"filled"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	UpdatedAt     time.Time       `json:"updatedAt"`
 }
 
 func (o *Order) RemainingQuantity() decimal.Decimal {

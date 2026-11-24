@@ -36,8 +36,12 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		writeGatewayError(w, err)
 		return
 	}
+	status := http.StatusCreated
+	if resp.Replayed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, resp)
 
-	writeJSON(w, http.StatusCreated, resp)
 }
 
 // GetOrder handles GET /orders/{id}.

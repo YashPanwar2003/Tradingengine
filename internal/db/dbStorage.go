@@ -62,18 +62,18 @@ func NewDBStorage(client *Client) *DBStorage {
 	return &DBStorage{client: client}
 }
 
-const orderColumns = `id::text, client_id, symbol, side, type, status, time_in_force,
+const orderColumns = `id::text, client_id, COALESCE(client_order_id, ''), symbol, side, type, status, time_in_force,
 	price::text, quantity::text, filled::text, created_at, updated_at`
 
 // InsertOrder persists a newly created order.
 func (s *DBStorage) InsertOrder(ctx context.Context, o *types.Order) error {
 	const q = `
 		INSERT INTO orders
-			(id, client_id, symbol, side, type, status, time_in_force,
+			(id, client_id, client_order_id, symbol, side, type, status, time_in_force,
 			 price, quantity, filled, created_at, updated_at)
 		VALUES
-			($1::uuid, $2, $3, $4, $5, $6, $7,
-			 $8::numeric, $9::numeric, $10::numeric, $11, $12)`
+			($1::uuid, $2, NULLIF($3::text, ''), $4, $5, $6, $7, $8,
+			 $9::numeric, $10::numeric, $11::numeric, $12, $13)`
 
 	// Market orders have no price: store NULL, not 0.
 	var price *string
@@ -83,15 +83,34 @@ func (s *DBStorage) InsertOrder(ctx context.Context, o *types.Order) error {
 	}
 
 	_, err := s.client.Exec(ctx, q,
-		o.Id, o.ClientId, o.Symbol,
+		o.Id, o.ClientId, o.ClientOrderId, o.Symbol,
 		string(o.Side), string(o.Type), string(o.Status), string(o.TimeInForce),
 		price, o.Quantity.String(), o.Filled.String(),
 		o.CreatedAt, o.UpdatedAt,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "uq_orders_client_order_id" {
+			return types.ErrDuplicateClientOrderId
+		}
 		return fmt.Errorf("insert order %s: %w", o.Id, err)
 	}
 	return nil
+}
+
+// FindByClientOrderID returns the order a client created with this key.
+func (s *DBStorage) FindByClientOrderID(ctx context.Context, clientID, clientOrderID string) (*types.Order, error) {
+	q := `SELECT ` + orderColumns + ` FROM orders WHERE client_id = $1 AND client_order_id = $2`
+
+	o, err := scanOrder(s.client.QueryRow(ctx, q, clientID, clientOrderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, types.ErrOrderNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find order by client order id: %w", err)
+	}
+	return o, nil
 }
 
 // UpdateOrderFill persists the mutable parts of an order after a match or cancel.
@@ -184,7 +203,7 @@ func scanOrder(sc scanner) (*types.Order, error) {
 	)
 
 	if err := sc.Scan(
-		&o.Id, &o.ClientId, &o.Symbol, &side, &typ, &status, &tif,
+		&o.Id, &o.ClientId, &o.ClientOrderId, &o.Symbol, &side, &typ, &status, &tif,
 		&price, &qty, &filled, &o.CreatedAt, &o.UpdatedAt,
 	); err != nil {
 		return nil, err

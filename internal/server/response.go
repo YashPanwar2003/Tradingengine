@@ -43,6 +43,10 @@ func writeGatewayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		writeError(w, http.StatusServiceUnavailable, "service busy, try again")
+	case errors.Is(err, types.ErrOrderAlreadyFilled),
+		errors.Is(err, types.ErrOrderCancelled),
+		errors.Is(err, types.ErrIdempotencyConflict):
+		writeError(w, http.StatusConflict, err.Error())
 	default:
 		log.Printf("internal error: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

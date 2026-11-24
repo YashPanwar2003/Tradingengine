@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"log"
+
 	"tradingengine/internal/order"
 	"tradingengine/internal/queue"
 	"tradingengine/pkg/types"
@@ -64,12 +66,19 @@ func (g *Gateway) PlaceOrder(req PlaceOrderRequest) (*PlaceOrderResponse, error)
 	if req.Type == types.OrderTypeLimit && !price.IsPositive() {
 		return nil, types.ErrInvalidPrice
 	}
-
+	if err := validateClientOrderId(req.ClientOrderId); err != nil {
+		return nil, err
+	}
 	newOrder := types.NewOrder(
 		req.ClientId, req.Symbol, req.Side, req.Type,
 		price, quantity, req.TimeInForce,
 	)
+	newOrder.ClientOrderId = req.ClientOrderId
 	if err := g.orderService.Place(newOrder); err != nil {
+		var dup *order.DuplicateError
+		if errors.As(err, &dup) {
+			return replayResponse(dup.Existing, newOrder)
+		}
 		return nil, fmt.Errorf("place order: %w", err)
 	}
 
@@ -124,4 +133,40 @@ func (g *Gateway) GetClientOrders(clientId string) ([]*types.Order, error) {
 
 	}
 	return orders, nil
+}
+
+// A retry must repeat the original request exactly.
+func replayResponse(existing, requested *types.Order) (*PlaceOrderResponse, error) {
+	if !sameRequest(existing, requested) {
+		return nil, fmt.Errorf("%w: %q", types.ErrIdempotencyConflict, requested.ClientOrderId)
+	}
+	return &PlaceOrderResponse{
+		Order:    existing,
+		Message:  "Duplicate request: returning the original order",
+		Replayed: true,
+	}, nil
+}
+
+func sameRequest(a, b *types.Order) bool {
+	return a.Symbol == b.Symbol && a.Side == b.Side && a.Type == b.Type &&
+		a.TimeInForce == b.TimeInForce &&
+		a.Price.Equal(b.Price) && a.Quantity.Equal(b.Quantity)
+}
+
+func validateClientOrderId(id string) error {
+	if id == "" {
+		return nil // the key is optional
+	}
+	if len(id) > 64 {
+		return fmt.Errorf("clientOrderId must be at most 64 characters: %w", types.ErrInvalidRequest)
+	}
+	for _, r := range id {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == ':'
+		if !ok {
+			return fmt.Errorf("clientOrderId may only contain letters, digits, '-', '_', '.' and ':': %w",
+				types.ErrInvalidRequest)
+		}
+	}
+	return nil
 }

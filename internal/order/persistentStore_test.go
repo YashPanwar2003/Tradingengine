@@ -31,16 +31,30 @@ type fakePersister struct {
 	failFills   int           // fail this many RecordFill calls before succeeding
 	stored      []types.Order // what "Postgres" holds, for the read fallbacks
 	listErr     error
+	duplicateOf *types.Order // when set, InsertOrder reports a duplicate clientOrderId
 }
 
 func (f *fakePersister) InsertOrder(_ context.Context, o *types.Order) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.duplicateOf != nil {
+		return types.ErrDuplicateClientOrderId
+	}
 	if f.insertErr != nil {
 		return f.insertErr
 	}
 	f.inserted = append(f.inserted, *o)
 	return nil
+}
+
+func (f *fakePersister) FindByClientOrderID(_ context.Context, clientID, key string) (*types.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.duplicateOf == nil {
+		return nil, types.ErrOrderNotFound
+	}
+	c := *f.duplicateOf
+	return &c, nil
 }
 
 func (f *fakePersister) UpdateOrderFill(_ context.Context, o *types.Order) error {
@@ -65,6 +79,34 @@ func (f *fakePersister) RecordFill(_ context.Context, in, rest *types.Order, tr 
 	f.fills = append(f.fills, fillCall{incoming: *in, resting: *rest, trade: *tr})
 	f.ops = append(f.ops, "fill")
 	return nil
+}
+
+func (f *fakePersister) GetOrderByID(_ context.Context, id string) (*types.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, o := range f.stored {
+		if o.Id == id {
+			c := o
+			return &c, nil
+		}
+	}
+	return nil, types.ErrOrderNotFound
+}
+
+func (f *fakePersister) ListOrdersByClient(_ context.Context, clientID string, limit int) ([]*types.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make([]*types.Order, 0)
+	for _, o := range f.stored {
+		if o.ClientId == clientID && len(out) < limit {
+			c := o
+			out = append(out, &c)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakePersister) updates() []types.Order {
@@ -130,6 +172,46 @@ func TestSave_DBFailureLeavesMemoryUntouched(t *testing.T) {
 	}
 	if _, err := ps.GetById(o.Id); err == nil {
 		t.Fatal("an order the database rejected must not exist in memory")
+	}
+}
+
+// ---- duplicate clientOrderId ----
+
+func TestSave_DuplicateKeyReturnsTheExistingOrderAndStoresNothing(t *testing.T) {
+	existing := newOrder()
+	existing.ClientOrderId = "k1"
+	ps := order.NewPersistentStore(order.NewMemoryStore(), &fakePersister{duplicateOf: existing}, 10)
+
+	again := newOrder()
+	again.ClientOrderId = "k1"
+	err := ps.Save(again)
+
+	var dup *order.DuplicateError
+	if !errors.As(err, &dup) || dup.Existing.Id != existing.Id {
+		t.Fatalf("expected a DuplicateError pointing at the original, got %v", err)
+	}
+	if _, err := ps.GetById(again.Id); err == nil {
+		t.Fatal("the duplicate must not be stored in memory")
+	}
+}
+
+func TestSave_DuplicatePrefersTheFresherMemoryCopy(t *testing.T) {
+	stale := newOrder() // what the database still shows
+	stale.ClientOrderId = "k1"
+
+	mem := order.NewMemoryStore()
+	live := stale.Clone()
+	live.Status = types.OrderStatusPartial
+	live.Filled = decimal.NewFromInt(2)
+	_ = mem.Save(live)
+
+	ps := order.NewPersistentStore(mem, &fakePersister{duplicateOf: stale}, 10)
+	again := newOrder()
+	again.ClientOrderId = "k1"
+
+	var dup *order.DuplicateError
+	if err := ps.Save(again); !errors.As(err, &dup) || dup.Existing.Status != types.OrderStatusPartial {
+		t.Fatalf("a retry should see the live state, got %v", err)
 	}
 }
 
@@ -272,31 +354,4 @@ func TestRecordFill_UnknownOrderQueuesNothing(t *testing.T) {
 	if ops := fake.opLog(); len(ops) != 0 {
 		t.Fatalf("nothing should be queued, got %v", ops)
 	}
-}
-func (f *fakePersister) GetOrderByID(_ context.Context, id string) (*types.Order, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, o := range f.stored {
-		if o.Id == id {
-			c := o
-			return &c, nil
-		}
-	}
-	return nil, types.ErrOrderNotFound
-}
-
-func (f *fakePersister) ListOrdersByClient(_ context.Context, clientID string, limit int) ([]*types.Order, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
-	out := make([]*types.Order, 0)
-	for _, o := range f.stored {
-		if o.ClientId == clientID && len(out) < limit {
-			c := o
-			out = append(out, &c)
-		}
-	}
-	return out, nil
 }

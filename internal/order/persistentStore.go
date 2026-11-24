@@ -18,6 +18,7 @@ type Persister interface {
 	RecordFill(ctx context.Context, incoming, resting *types.Order, trade *types.Trade) error
 	GetOrderByID(ctx context.Context, id string) (*types.Order, error)
 	ListOrdersByClient(ctx context.Context, clientID string, limit int) ([]*types.Order, error)
+	FindByClientOrderID(ctx context.Context, clientID, clientOrderID string) (*types.Order, error)
 }
 
 type fillJob struct {
@@ -41,6 +42,10 @@ type PersistentStore struct {
 	done  chan struct{}
 }
 
+type DuplicateError struct{ Existing *types.Order }
+
+func (e *DuplicateError) Error() string { return "duplicate clientOrderId" }
+
 func NewPersistentStore(mem Store, db Persister, buffer int) *PersistentStore {
 	return &PersistentStore{
 		Store: mem,
@@ -57,9 +62,23 @@ func (p *PersistentStore) Save(o *types.Order) error {
 	defer cancel()
 
 	if err := p.db.InsertOrder(ctx, o); err != nil {
+		if errors.Is(err, types.ErrDuplicateClientOrderId) {
+			return p.duplicate(ctx, o)
+		}
 		return fmt.Errorf("persist new order: %w", err)
 	}
 	return p.Store.Save(o)
+}
+
+func (p *PersistentStore) duplicate(ctx context.Context, o *types.Order) error {
+	existing, err := p.db.FindByClientOrderID(ctx, o.ClientId, o.ClientOrderId)
+	if err != nil {
+		return fmt.Errorf("load the order that already uses this clientOrderId: %w", err)
+	}
+	if fresh, err := p.Store.GetById(existing.Id); err == nil {
+		existing = fresh // memory is ahead of the asynchronous database writes
+	}
+	return &DuplicateError{Existing: existing}
 }
 
 // Update handles cancels and rejects: memory now, one queued DB write.
