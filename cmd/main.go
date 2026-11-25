@@ -26,7 +26,10 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("no .env file found, using environment variables")
 	}
-
+	addr := os.Getenv("ENGINE_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
 	// Fail fast, before anything is started.
 	apiKey := os.Getenv("ENGINE_API_KEY")
 	if apiKey == "" {
@@ -92,7 +95,7 @@ func main() {
 		Health: postgresClient,
 	})
 	httpServer := &http.Server{
-		Addr:              ":8080",
+		Addr:              addr,
 		Handler:           server.NewRouter(gw, apiKey),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
