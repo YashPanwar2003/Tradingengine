@@ -193,3 +193,20 @@ func TestReject_SetsRejectedStatus(t *testing.T) {
 		t.Fatalf("expected REJECTED, got %s", got.Status)
 	}
 }
+func TestExecuteFill_RefusesATradeBetweenOrdersOfTheSameClient(t *testing.T) {
+	mem := order.NewMemoryStore()
+	svc := order.NewService(mem)
+
+	buy, sell := newOrder(), newSell()
+	sell.ClientId = buy.ClientId
+	_ = mem.Save(buy)
+	_ = mem.Save(sell)
+
+	_, err := svc.ExecuteFill(buy, sell, decimal.NewFromInt(1), decimal.NewFromInt(100))
+	if !errors.Is(err, types.ErrSelfTrade) {
+		t.Fatalf("expected ErrSelfTrade, got %v", err)
+	}
+	if !buy.Filled.IsZero() || !sell.Filled.IsZero() {
+		t.Fatal("neither order may change")
+	}
+}

@@ -46,3 +46,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: image builds
         run: docker build -t tradingengine:ci .
+        

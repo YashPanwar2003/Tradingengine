@@ -18,4 +18,5 @@ var (
 	ErrForbidden              = errors.New("operation not allowed")
 	ErrDuplicateClientOrderId = errors.New("clientOrderId already used")
 	ErrIdempotencyConflict    = errors.New("clientOrderId was already used with different order details")
+	ErrSelfTrade = errors.New("an order cannot trade with another order of the same client")
 )

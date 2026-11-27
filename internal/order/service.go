@@ -111,6 +111,9 @@ func (s *Service) ExecuteFill(incoming, resting *types.Order, qty, price decimal
 			return nil, fmt.Errorf("execute fill: quantity %s exceeds remaining %s on order %s",
 				qty, o.RemainingQuantity(), o.Id)
 		}
+		if incoming.ClientId == resting.ClientId {
+			return nil, fmt.Errorf("execute fill: %w", types.ErrSelfTrade)
+		}
 	}
 
 	now := time.Now().UTC()

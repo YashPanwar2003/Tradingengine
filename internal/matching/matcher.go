@@ -15,6 +15,13 @@ type Matcher struct {
 	tradeCh      chan *types.Trade
 }
 
+type fillResult int
+
+const (
+	fillContinue  fillResult = iota 
+	fillAborted                     
+	fillSelfTrade                   
+)
 func NewMatcher(orderService *order.Service, tradeCh chan *types.Trade) *Matcher {
 	return &Matcher{
 		orderService: orderService,
@@ -56,13 +63,18 @@ func (m *Matcher) Match(incoming *types.Order, book *orderbook.Book) {
 }
 
 func (m *Matcher) MatchMarket(incoming *types.Order, book *orderbook.Book) {
+	loop:
 	for !incoming.IsFilled() {
 		best := bestOpposite(incoming, book)
 		if best == nil {
 			break
 		}
-		if !m.FillAgainstLevel(incoming, best, book) {
-			break
+		switch m.FillAgainstLevel(incoming, best, book) {
+		case fillSelfTrade:
+			m.preventSelfTrade(incoming)
+			return
+		case fillAborted:
+			break loop
 		}
 	}
 	if !incoming.IsFilled() {
@@ -71,13 +83,18 @@ func (m *Matcher) MatchMarket(incoming *types.Order, book *orderbook.Book) {
 }
 
 func (m *Matcher) MatchLimit(incoming *types.Order, book *orderbook.Book) {
+	loop:
 	for !incoming.IsFilled() {
 		best := bestOpposite(incoming, book)
 		if best == nil || !crosses(incoming, best.Price) {
 			break
 		}
-		if !m.FillAgainstLevel(incoming, best, book) {
-			break
+		switch m.FillAgainstLevel(incoming, best, book) {
+		case fillSelfTrade:
+			m.preventSelfTrade(incoming)
+			return
+		case fillAborted:
+			break loop
 		}
 	}
 	if incoming.IsFilled() {
@@ -93,9 +110,12 @@ func (m *Matcher) MatchLimit(incoming *types.Order, book *orderbook.Book) {
 // FillAgainstLevel trades the incoming order against the orders resting at one
 // price level, oldest first. It returns false if it had to stop early because
 // a fill could not be applied, so callers never loop forever on the same level.
-func (m *Matcher) FillAgainstLevel(incoming *types.Order, level *orderbook.Level, book *orderbook.Book) bool {
+func (m *Matcher) FillAgainstLevel(incoming *types.Order, level *orderbook.Level, book *orderbook.Book) fillResult {
 	for !incoming.IsFilled() && !level.IsEmpty() {
 		resting := level.Front()
+		if resting.ClientId == incoming.ClientId{
+		    return fillSelfTrade
+		}
 		fillQuantity := decimal.Min(
 			incoming.RemainingQuantity(),
 			resting.RemainingQuantity(),
@@ -105,7 +125,7 @@ func (m *Matcher) FillAgainstLevel(incoming *types.Order, level *orderbook.Level
 		trade, err := m.orderService.ExecuteFill(incoming, resting, fillQuantity, tradePrice)
 		if err != nil {
 			log.Printf("execute fill incoming=%s resting=%s: %v", incoming.Id, resting.Id, err)
-			return false
+			return fillAborted
 		}
 		m.tradeCh <- trade
 		log.Printf("trade executed: %s qty=%s price=%s",
@@ -122,7 +142,7 @@ func (m *Matcher) FillAgainstLevel(incoming *types.Order, level *orderbook.Level
 			book.CleanLevel(types.SideBuy, level.Price)
 		}
 	}
-	return true
+	return fillContinue
 }
 
 func (m *Matcher) cancel(o *types.Order) {
@@ -168,7 +188,7 @@ func canFillCompletely(incoming *types.Order, book *orderbook.Book) bool {
 		limit = &incoming.Price
 	}
 	need := incoming.RemainingQuantity()
-	return book.Liquidity(incoming.Side, limit, need).GreaterThanOrEqual(need)
+	return book.Liquidity(incoming.Side, limit, need, incoming.ClientId).GreaterThanOrEqual(need)
 }
 
 func bestOpposite(incoming *types.Order, book *orderbook.Book) *orderbook.Level {
@@ -199,3 +219,9 @@ func getSellOrderId(incoming, resting *types.Order) string {
 	}
 	return resting.Id
 }
+
+func (m *Matcher) preventSelfTrade(o *types.Order){
+	log.Printf("self-trade prevented: cancelling remainder of order %s (client %s)", o.Id, o.ClientId)
+	m.cancel(o)
+}
+

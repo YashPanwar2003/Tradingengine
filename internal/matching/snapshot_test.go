@@ -33,17 +33,7 @@ func snapEngine(t *testing.T) (*matching.Engine, *order.Service, *queue.OrderQue
 	return e, svc, q
 }
 
-func snapSubmit(t *testing.T, svc *order.Service, q *queue.OrderQueue, side types.Side, price, qty int64) {
-	t.Helper()
-	o := types.NewOrder("c1", "BTC-USD", side, types.OrderTypeLimit,
-		snapDec(price), snapDec(qty), types.TimeInForceGTC)
-	if err := svc.Place(o); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.Enqueue(o); err != nil {
-		t.Fatal(err)
-	}
-}
+
 
 // The engine works asynchronously, so poll instead of sleeping a fixed time.
 func snapEventually(t *testing.T, what string, cond func() bool) {
@@ -152,5 +142,20 @@ func TestSnapshot_GivesUpWhenTheEngineIsNotRunning(t *testing.T) {
 	defer cancel()
 	if _, err := e.Snapshot(ctx, "BTC-USD", 5); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded instead of hanging, got %v", err)
+	}
+}
+func snapSubmit(t *testing.T, svc *order.Service, q *queue.OrderQueue, side types.Side, price, qty int64) {
+	t.Helper()
+	client := "seller"
+	if side == types.SideBuy {
+		client = "buyer"
+	}
+	o := types.NewOrder(client, "BTC-USD", side, types.OrderTypeLimit,
+		snapDec(price), snapDec(qty), types.TimeInForceGTC)
+	if err := svc.Place(o); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Enqueue(o); err != nil {
+		t.Fatal(err)
 	}
 }

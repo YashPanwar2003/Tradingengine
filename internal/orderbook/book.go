@@ -68,7 +68,7 @@ func (b *Book) CleanLevel(side types.Side, price decimal.Decimal) {
 // could trade right now. Only prices the order accepts count (limit == nil
 // means any price, as for a market order), and it stops once `need` is
 // covered. It never changes the book.
-func (b *Book) Liquidity(incoming types.Side, limit *decimal.Decimal, need decimal.Decimal) decimal.Decimal {
+func (b *Book) Liquidity(incoming types.Side, limit *decimal.Decimal, need decimal.Decimal, clientID string) decimal.Decimal {
 	opposite := b.Asks
 	if incoming == types.SideSell {
 		opposite = b.Bids
@@ -83,9 +83,14 @@ func (b *Book) Liquidity(incoming types.Side, limit *decimal.Decimal, need decim
 				break
 			}
 		}
-		total = total.Add(level.Quantity())
-		if total.GreaterThanOrEqual(need) {
-			break
+		for _, resting := range level.Orders {
+			if resting.ClientId == clientID {
+				return total
+			}
+			total = total.Add(resting.RemainingQuantity())
+			if total.GreaterThanOrEqual(need) {
+				return total
+			}
 		}
 	}
 	return total

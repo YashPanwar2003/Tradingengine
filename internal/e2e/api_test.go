@@ -676,3 +676,23 @@ func TestAPI_ConcurrentRetriesCreateExactlyOneOrder(t *testing.T) {
 		return len(book.Asks) == 1 && book.Asks[0].Orders == 1
 	})
 }
+func TestAPI_ClientCannotTradeWithItself(t *testing.T) {
+	client := testutil.NewDB(t)
+	s := startStack(t, client)
+
+	sell := s.place(t, "c1", "SELL", 100, 5, "GTC")
+	buy := s.place(t, "c1", "BUY", 100, 5, "GTC")
+	s.waitFor(t, buy.Id, types.OrderStatusCancelled, 0)
+	s.waitFor(t, sell.Id, types.OrderStatusNew, 0)
+
+	// another client can still take the resting sell
+	other := s.place(t, "c2", "BUY", 100, 5, "GTC")
+	s.waitFor(t, other.Id, types.OrderStatusCompleted, 5)
+	s.waitFor(t, sell.Id, types.OrderStatusCompleted, 5)
+
+	s.Stop()
+	if n := countRows(t, client, "SELECT count(*) FROM trades"); n != 1 {
+		t.Fatalf("expected exactly 1 trade, got %d", n)
+	}
+	testutil.AssertFillsMatchTrades(t, client)
+}
